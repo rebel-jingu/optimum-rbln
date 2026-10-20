@@ -259,12 +259,13 @@ class RBLNEmbeddingGemma2Model(RBLNModel):
                 if not len(valid) or (valid >= self.config.vision_config.position_embedding_size).any():
                     raise ValueError("Each image requires a nonempty bounded coordinate grid")
                 width, height = (valid.max(0).values + 1).tolist()
-                if (
-                    width % k
-                    or height % k
-                    or len(valid) != width * height
-                    or len(torch.unique(valid, dim=0)) != len(valid)
-                ):
+                if width % k or height % k or len(valid) != width * height:
+                    raise ValueError("Image coordinates must contain complete, distinct pooling cells")
+                # Bounds and rectangle size are already checked. Every flat
+                # coordinate occurring once proves a complete grid, without
+                # sorting 2D rows on every request.
+                counts = torch.bincount(valid[:, 0] + width * valid[:, 1], minlength=len(valid))
+                if not counts.eq(1).all():
                     raise ValueError("Image coordinates must contain complete, distinct pooling cells")
         if "input_features" in inputs:
             features, valid = inputs["input_features"], inputs["input_features_mask"]
