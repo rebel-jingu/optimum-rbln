@@ -5,17 +5,18 @@ import json
 import math
 import os
 import statistics
+import subprocess
 from pathlib import Path
 from time import perf_counter_ns
 
 
-def main():
+def build_parser():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--threads", type=int, default=4)
-    parser.add_argument("--devices", type=int, nargs="+", default=[0])
     sub = parser.add_subparsers(dest="command", required=True)
     for mode in ("compile", "import"):
         task = sub.add_parser(mode)
+        task.add_argument("--devices", type=int, nargs="+", default=[0])
         task.add_argument("--output", type=Path, required=True)
         task.add_argument("--revision", default="914f7f89142e33e77833254d9c9b90c3cef7303b")
         task.add_argument("--dtype", choices=["float32", "bfloat16"], default="bfloat16")
@@ -28,6 +29,7 @@ def main():
             task.add_argument("--audio-buckets", nargs="+", type=int, default=[64, 128, 1056, 1536])
     for mode in ("run", "benchmark"):
         task = sub.add_parser(mode)
+        task.add_argument("--devices", type=int, nargs="+", default=[0])
         task.add_argument("--model", type=Path, required=True)
         task.add_argument("--requests", type=Path, required=True, help="JSON object mapping names to raw requests")
         if mode == "benchmark":
@@ -35,6 +37,11 @@ def main():
             task.add_argument("--warmup", type=int, default=3)
             task.add_argument("--repeats", type=int, default=100)
             task.add_argument("--trace", action="store_true", help="Additional pass, excluded from latency samples")
+    return parser
+
+
+def main():
+    parser = build_parser()
     args = parser.parse_args()
     if args.threads < 1 or (args.command == "benchmark" and (args.repeats < 1 or args.warmup < 0)):
         parser.error("threads/repeats must be positive and warmup nonnegative")
@@ -62,7 +69,12 @@ def main():
         processor = AutoProcessor.from_pretrained("google/embeddinggemma-2", revision=args.revision)
         if args.command == "import":
             model = RBLNEmbeddingGemma2Model.from_legacy_bundle(
-                args.bundle, source, args.output, processor=processor, device=args.devices
+                args.bundle,
+                source,
+                args.output,
+                processor=processor,
+                device=args.devices,
+                source_revision=args.revision,
             )
         else:
             model = RBLNEmbeddingGemma2Model.from_model(
@@ -103,7 +115,13 @@ def main():
             )
             return
         args.output.mkdir(parents=True)
+        git_commit = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"],
+            cwd=Path(__file__).resolve().parents[2],
+            text=True,
+        ).strip()
         report = {
+            "git_commit": git_commit,
             "implementation": "native optimum-rbln",
             "versions": package_versions(),
             "npu": model.rbln_config.npu,

@@ -27,8 +27,8 @@ From the repository root:
 ```bash
 export UV_PROJECT_ENVIRONMENT="$PWD/.venv-embeddinggemma2"
 uv sync --project examples/multimodal-embedding --python 3.12
-uv pip install --python "$UV_PROJECT_ENVIRONMENT/bin/python" --no-deps \
-  /absolute/path/to/rebel_compiler.whl -e .
+uv pip install --python "$UV_PROJECT_ENVIRONMENT/bin/python" /absolute/path/to/rebel_compiler.whl
+uv pip install --python "$UV_PROJECT_ENVIRONMENT/bin/python" --no-deps -e .
 export OMP_NUM_THREADS=4 RBLN_NUM_THREADS=4
 export TORCH_DEVICE_BACKEND_AUTOLOAD=0 RBLN_PROFILER=0 RBLN_RUNTIME_TIMER=0
 ```
@@ -43,19 +43,19 @@ so the explicitly installed SDK/editable package remain installed.
 ```bash
 # CR13: one device exposes four chiplets.
 uv run --project examples/multimodal-embedding --no-sync python \
-  examples/multimodal-embedding/run_embedding_gemma2.py --devices 0 compile \
+  examples/multimodal-embedding/run_embedding_gemma2.py compile --devices 0 \
   --npu RBLN-CR13 --output .cache/compiled-cr13
 
 # CA25: use four logical NPUs. The compiler chooses their distribution.
 uv run --project examples/multimodal-embedding --no-sync python \
-  examples/multimodal-embedding/run_embedding_gemma2.py --devices 0 1 2 3 compile \
+  examples/multimodal-embedding/run_embedding_gemma2.py compile --devices 0 1 2 3 \
   --npu RBLN-CA25 --audio-layout selector --output .cache/compiled-ca25
 
 # Import existing verified binaries, preserving hashes and layout provenance.
 # Loads the pinned source checkpoint ONCE to extract token embeddings and
 # positional buffers; subsequent native loads do not need that checkpoint.
 uv run --project examples/multimodal-embedding --no-sync python \
-  examples/multimodal-embedding/run_embedding_gemma2.py --devices 0 1 2 3 import \
+  examples/multimodal-embedding/run_embedding_gemma2.py import --devices 0 1 2 3 \
   --bundle /absolute/path/to/ca25-sdk011-bf16-70-quad-selector1056 \
   --output .cache/native-ca25
 ```
@@ -82,9 +82,13 @@ embedding = model(**inputs).embeddings
 
 # Raw file inputs also include decode, audio resampling and CPU processing.
 embedding = model.encode(
-    {"text": "Picture <|image|> and sound <|audio|>",
-     "images": ["/absolute/path/photo.png"], "audio": ["/absolute/path/speech.flac"]},
-    processor=processor, dimensions=256,
+    {
+        "text": "Picture <|image|> and sound <|audio|>",
+        "images": ["/absolute/path/photo.png"],
+        "audio": ["/absolute/path/speech.flac"],
+    },
+    processor=processor,
+    dimensions=256,
 )
 model.save_pretrained(".cache/native-ca25-saved")
 model.close()
@@ -97,6 +101,9 @@ In-memory audio arrays must be finite mono float waveforms sampled at 16 kHz.
 Compiled reload loads only native configs, the `.rbln` graphs, and tensor-only
 `host_state.pt`; it does not construct/download the full HF model. `from_model`
 and `from_pretrained(export=True)` provide the native fresh-compilation path.
+When calling `from_legacy_bundle` directly, pass `source_revision` equal to the
+revision used to load `source_model`; newer Transformers may omit the config's
+commit metadata. A conflicting stored revision is still rejected.
 
 ## E2E and Perfetto
 
@@ -105,7 +112,7 @@ Create a JSON object mapping case names to raw requests, for example
 
 ```bash
 uv run --project examples/multimodal-embedding --no-sync python \
-  examples/multimodal-embedding/run_embedding_gemma2.py --devices 0 1 2 3 benchmark \
+  examples/multimodal-embedding/run_embedding_gemma2.py benchmark --devices 0 1 2 3 \
   --model .cache/native-ca25 --requests /absolute/path/requests.json \
   --output .cache/native-benchmark --warmup 3 --repeats 100 --trace
 ```
@@ -123,3 +130,8 @@ claim an internal device trace is available.
 uv run --project examples/multimodal-embedding --no-sync python -m pytest -q \
   tests/unit/cpu/test_embedding_gemma2.py
 ```
+
+These tests skip under upstream's default Transformers 5.15.1 environment.
+With the model-specific 5.20.1 stack, upstream's Qwen2.5-VL CPU test currently
+fails collection because `Qwen2_5_VisionRotaryEmbedding` was removed upstream;
+that unrelated adapter is not changed by this migration.

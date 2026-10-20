@@ -64,7 +64,7 @@ def load_reference(model_id=MODEL_ID, revision=MODEL_REVISION, dtype="bfloat16")
 
 def package_versions() -> dict:
     versions = {}
-    for name in ("torch", "transformers", "torchvision", "rebel-compiler", "numpy"):
+    for name in ("optimum-rbln", "torch", "transformers", "torchvision", "rebel-compiler", "numpy"):
         try:
             versions[name] = importlib.metadata.version(name)
         except importlib.metadata.PackageNotFoundError:

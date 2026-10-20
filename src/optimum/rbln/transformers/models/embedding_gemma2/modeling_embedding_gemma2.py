@@ -26,6 +26,7 @@ from transformers.utils import ModelOutput
 
 from ....configuration_utils import RBLNCompileConfig
 from ....modeling import RBLNModel
+from ....utils.runtime_utils import tp_and_devices_are_ok
 from .embedding_gemma2_architecture import (
     AudioGraph,
     TextGraph,
@@ -100,7 +101,15 @@ class RBLNEmbeddingGemma2Model(RBLNModel):
 
     @classmethod
     def from_legacy_bundle(
-        cls, bundle_dir, source_model, model_save_dir, *, processor=None, device=0, create_runtimes=True
+        cls,
+        bundle_dir,
+        source_model,
+        model_save_dir,
+        *,
+        processor=None,
+        device=0,
+        create_runtimes=True,
+        source_revision=None,
     ):
         """Import existing graphs once; source_model supplies the missing host state.
 
@@ -110,7 +119,9 @@ class RBLNEmbeddingGemma2Model(RBLNModel):
         """
         from .embedding_gemma2_conversion import import_legacy_bundle
 
-        directory = import_legacy_bundle(bundle_dir, source_model, model_save_dir, processor)
+        directory = import_legacy_bundle(
+            bundle_dir, source_model, model_save_dir, processor, source_revision=source_revision
+        )
         return cls.from_pretrained(directory, export=False, rbln_device=device, rbln_create_runtimes=create_runtimes)
 
     @classmethod
@@ -133,12 +144,20 @@ class RBLNEmbeddingGemma2Model(RBLNModel):
     def get_compiled_model(cls, model, rbln_config):
         results = {}
         configs = {cfg.compiled_model_name: cfg for cfg in rbln_config.compile_cfgs}
+        groups = {
+            name: resolve_device_group(rbln_config.device_map[name], cfg.num_devices) for name, cfg in configs.items()
+        }
+        if rbln_config.create_runtimes:
+            for name, cfg in configs.items():
+                error = tp_and_devices_are_ok(num_devices=cfg.num_devices, device=groups[name], npu=cfg.npu)
+                if error:
+                    raise ValueError(error)
         for name, graph, inputs in graph_examples(model, rbln_config):
             compiled = cls.compile(
                 graph.eval(),
                 configs[name],
                 rbln_config.create_runtimes,
-                resolve_device_group(rbln_config.device, rbln_config.num_devices),
+                groups[name],
                 example_inputs=list(inputs.values()),
             )
             # Constant positions can be folded away. Save only the published
@@ -232,6 +251,21 @@ class RBLNEmbeddingGemma2Model(RBLNModel):
                 self.config.vision_config.patch_size**2 * 3,
             ):
                 raise ValueError("Image shape differs from compiled capacity; use the configured max_soft_tokens")
+            padding = positions.eq(-1)
+            if (padding.any(-1) != padding.all(-1)).any() or (positions < -1).any():
+                raise ValueError("Image padding coordinates must be complete (-1, -1) pairs")
+            for coords, padded in zip(positions, padding.all(-1), strict=True):
+                valid = coords[~padded]
+                if not len(valid) or (valid >= self.config.vision_config.position_embedding_size).any():
+                    raise ValueError("Each image requires a nonempty bounded coordinate grid")
+                width, height = (valid.max(0).values + 1).tolist()
+                if (
+                    width % k
+                    or height % k
+                    or len(valid) != width * height
+                    or len(torch.unique(valid, dim=0)) != len(valid)
+                ):
+                    raise ValueError("Image coordinates must contain complete, distinct pooling cells")
         if "input_features" in inputs:
             features, valid = inputs["input_features"], inputs["input_features_mask"]
             if (
@@ -294,6 +328,7 @@ class RBLNEmbeddingGemma2Model(RBLNModel):
             if value is not None:
                 inputs[name] = value
         self._validate_inputs(inputs)
+        inputs["attention_mask"] = inputs["attention_mask"].to(torch.int64)
         if "input_features_mask" in inputs:
             inputs["input_features_mask"] = inputs["input_features_mask"].bool()
         if self.engine is None:

@@ -6,8 +6,11 @@ from unittest.mock import Mock
 import pytest
 import torch
 import torch.nn.functional as F
-from transformers import EmbeddingGemma2Config, EmbeddingGemma2Model, EmbeddingGemma2TextConfig
-from transformers.models.gemma4.configuration_gemma4 import Gemma4AudioConfig, Gemma4VisionConfig
+
+
+pytest.importorskip("transformers", minversion="5.20.1")
+from transformers import EmbeddingGemma2Config, EmbeddingGemma2Model, EmbeddingGemma2TextConfig  # noqa: E402
+from transformers.models.gemma4.configuration_gemma4 import Gemma4AudioConfig, Gemma4VisionConfig  # noqa: E402
 
 
 @pytest.fixture
@@ -342,6 +345,149 @@ def test_prepare_and_encode_preserve_native_output(tiny_model):
     assert model.prepare({"text": "hello"}, processor=processor) is inputs
     processor.assert_called_once_with(text="hello", return_tensors="pt", truncation=False)
     torch.testing.assert_close(model.encode({"text": "hello"}, processor=processor), model(**inputs).embeddings)
+
+
+@pytest.mark.parametrize(
+    "mode,extra",
+    [
+        ("compile", ["--npu", "RBLN-CA25", "--output", "/tmp/compiled"]),
+        ("import", ["--bundle", "/tmp/legacy", "--output", "/tmp/native"]),
+        ("run", ["--model", "/tmp/native", "--requests", "/tmp/requests.json"]),
+        ("benchmark", ["--model", "/tmp/native", "--requests", "/tmp/requests.json", "--output", "/tmp/results"]),
+    ],
+)
+def test_example_parser_accepts_multidevice_subcommands(mode, extra):
+    import runpy
+    from pathlib import Path
+
+    script = Path(__file__).parents[3] / "examples/multimodal-embedding/run_embedding_gemma2.py"
+    namespace = runpy.run_path(str(script))
+    args = namespace["build_parser"]().parse_args([mode, "--devices", "0", "1", "2", "3", *extra])
+    assert args.devices == [0, 1, 2, 3]
+
+
+@pytest.mark.parametrize("mask_dtype", [torch.bool, torch.float32, torch.int32])
+def test_binary_text_masks_are_canonicalized_before_runtime(tiny_model, mask_dtype):
+    model, _ = make_native_model(tiny_model)
+    ids = torch.tensor([[2, 3, 4]], dtype=torch.int32)
+    expected = model(input_ids=ids.long(), attention_mask=torch.ones(1, 3, dtype=torch.long)).embeddings
+    actual = model(input_ids=ids, attention_mask=torch.ones(1, 3, dtype=mask_dtype)).embeddings
+    torch.testing.assert_close(actual, expected)
+    torch.testing.assert_close(model(input_ids=ids).embeddings, expected)
+
+
+@pytest.mark.parametrize("kind", ["empty", "half_padding", "duplicate", "incomplete", "outside"])
+def test_invalid_image_coordinates_fail_before_runtime(tiny_model, kind):
+    model, runtimes = make_native_model(tiny_model)
+    positions = torch.full((1, 630, 2), -1, dtype=torch.long)
+    if kind != "empty":
+        positions[0, :9] = torch.tensor([(x, y) for y in range(3) for x in range(3)])
+    if kind == "half_padding":
+        positions[0, 0] = torch.tensor([-1, 0])
+    elif kind == "duplicate":
+        positions[0, 0] = positions[0, 1]
+    elif kind == "incomplete":
+        positions[0, 0] = torch.tensor([3, 0])
+    elif kind == "outside":
+        positions[0, :9] += tiny_model.config.vision_config.position_embedding_size
+    image_tokens = 0 if kind in ("empty", "half_padding") else 1
+    ids = torch.tensor([[2] + [90] * image_tokens])
+    with pytest.raises(ValueError):
+        model(input_ids=ids, pixel_values=torch.zeros(1, 630, 12), image_position_ids=positions)
+    for runtime in runtimes:
+        runtime.assert_not_called()
+
+
+def test_legacy_import_with_explicit_revision_preserves_originals(tiny_model, tmp_path, monkeypatch):
+    import json
+
+    from optimum.rbln import RBLNEmbeddingGemma2ModelConfig
+    from optimum.rbln.transformers.models.embedding_gemma2 import embedding_gemma2_conversion as module
+    from optimum.rbln.transformers.models.embedding_gemma2.embedding_gemma2_artifacts import file_sha256
+    from optimum.rbln.transformers.models.embedding_gemma2.embedding_gemma2_utils import (
+        MODEL_REVISION,
+        package_versions,
+    )
+
+    model, _ = make_native_model(tiny_model)
+    source = tmp_path / "legacy"
+    source.mkdir()
+    graphs, inspected = {}, {}
+    for cfg in model.rbln_config.compile_cfgs:
+        stage, capacity = cfg.compiled_model_name.split("_")
+        filename = cfg.compiled_model_name + ".rbln"
+        path = source / filename
+        path.write_bytes(filename.encode())
+        inputs = [
+            {"name": name, "shape": list(shape), "dtype": str(dtype).removeprefix("torch.")}
+            for name, shape, dtype in cfg.input_info
+        ]
+        graphs[f"{stage}:{capacity}"] = {"file": filename, "sha256": file_sha256(path), "inputs": inputs}
+        inspected[filename] = {"npu": "RBLN-CA25", "num_devices": 4, "inputs": inputs}
+    (source / "manifest.json").write_text(
+        json.dumps(
+            {
+                "schema": 1,
+                "model_revision": MODEL_REVISION,
+                "dtype": "float32",
+                "image_soft_tokens": 70,
+                "npu": "RBLN-CA25",
+                "num_devices": 4,
+                "versions": package_versions(),
+                "graphs": graphs,
+            }
+        )
+    )
+    before = {p.name: file_sha256(p) for p in source.iterdir()}
+    monkeypatch.setattr(module.rebel.RBLNCompiledModel, "inspect", lambda p: inspected[p.name])
+    destination = module.import_legacy_bundle(source, tiny_model, tmp_path / "native", source_revision=MODEL_REVISION)
+    loaded = RBLNEmbeddingGemma2ModelConfig.from_pretrained(destination)
+    assert loaded.npu == "RBLN-CA25" and loaded.num_devices == 4
+    assert before == {p.name: file_sha256(p) for p in source.iterdir()}
+    for graph in graphs.values():
+        assert file_sha256(destination / graph["file"]) == graph["sha256"]
+
+
+@pytest.mark.parametrize("invalid", [False, "shape", "hardware"])
+def test_compile_preflights_every_mapped_device_group(tiny_model, monkeypatch, invalid):
+    import optimum.rbln.transformers.models.embedding_gemma2.modeling_embedding_gemma2 as module
+    from optimum.rbln import RBLNEmbeddingGemma2Model, RBLNEmbeddingGemma2ModelConfig
+
+    cfg = RBLNEmbeddingGemma2ModelConfig(num_devices=4, npu="RBLN-CA25", text_buckets=[16], audio_buckets=[60])
+    RBLNEmbeddingGemma2Model.update_rbln_config([], tiny_model, tiny_model.config, cfg)
+    cfg.device_map = {c.compiled_model_name: [4, 5, 6, 7] for c in cfg.compile_cfgs}
+    if invalid == "shape":
+        cfg.device_map[cfg.compile_cfgs[-1].compiled_model_name] = [4, 4, 6, 7]
+    if invalid == "hardware":
+        cfg.device_map[cfg.compile_cfgs[-1].compiled_model_name] = [8, 9, 10, 11]
+    monkeypatch.setattr(
+        module,
+        "tp_and_devices_are_ok",
+        lambda **kwargs: "Wrong target NPU" if kwargs["device"][0] == 8 else None,
+        raising=False,
+    )
+    names = [c.compiled_model_name for c in cfg.compile_cfgs]
+    monkeypatch.setattr(
+        module,
+        "graph_examples",
+        lambda model, config: iter((name, torch.nn.Identity(), {"x": torch.ones(1)}) for name in names),
+    )
+    compiled = Mock()
+    compile_call = Mock(return_value=compiled)
+    monkeypatch.setattr(RBLNEmbeddingGemma2Model, "compile", compile_call)
+    monkeypatch.setattr(
+        module.rebel.RBLNCompiledModel,
+        "inspect",
+        lambda path: {"inputs": [{"name": "x", "shape": [1], "dtype": "float32"}]},
+    )
+    if invalid:
+        with pytest.raises(ValueError):
+            RBLNEmbeddingGemma2Model.get_compiled_model(tiny_model, cfg)
+        compile_call.assert_not_called()
+    else:
+        RBLNEmbeddingGemma2Model.get_compiled_model(tiny_model, cfg)
+        assert all(call.args[3] == [4, 5, 6, 7] for call in compile_call.call_args_list)
+        assert all(c.input_info == [("x", [1], "float32")] for c in cfg.compile_cfgs)
 
 
 def test_static_l2_normalization_matches_reference_at_small_norms():

@@ -28,12 +28,13 @@ from .embedding_gemma2_host import save_host_model
 from .embedding_gemma2_utils import MODEL_REVISION, package_versions
 
 
-def import_legacy_bundle(source, source_model, destination, processor=None):
+def import_legacy_bundle(source, source_model, destination, processor=None, *, source_revision=None):
     source, destination = Path(source).resolve(), Path(destination).resolve()
     manifest = load_manifest(source)
     if destination.exists():
         raise ValueError("Use a new native artifact directory")
-    if getattr(source_model.config, "_commit_hash", None) != MODEL_REVISION:
+    config_revision = getattr(source_model.config, "_commit_hash", None)
+    if (source_revision or config_revision) != MODEL_REVISION or config_revision not in (None, MODEL_REVISION):
         raise ValueError("The source model must be loaded from the pinned model revision")
     if str(source_model.dtype).removeprefix("torch.") != manifest["dtype"]:
         raise ValueError("Source model and legacy artifact dtype differ")
