@@ -32,10 +32,10 @@
 
 **Interfaces:** Produces RBLNEmbeddingGemma2ModelConfig, graph classes/input builders, lightweight host-state builder, and bounded metadata cache.
 
-- [ ] Write tests for config validation/roundtrip, numerical graphs and host-state equivalence.
-- [ ] Run them and observe missing implementation failures.
-- [ ] Move verified mathematics/cache and implement native config and tensor-only host state.
-- [ ] Run tests and Ruff; commit.
+- [x] Write tests for config validation/roundtrip, numerical graphs and host-state equivalence.
+- [x] Run them and observe missing implementation failures.
+- [x] Move verified mathematics/cache and implement native config and tensor-only host state.
+- [x] Run tests and Ruff; commit.
 
 ### Task 2: Native lifecycle and existing bundle conversion
 
@@ -43,10 +43,10 @@
 
 **Interfaces:** Consumes Task 1. Produces native compile/from_model/forward, named runtime routing, legacy conversion and compiled save/reload.
 
-- [ ] Write tests for native discovery, runtime dispatch, multimodal outputs, capacity errors and reload without full model weights.
-- [ ] Observe failures, then integrate through RBLNModel hooks and preserve inspected input order.
-- [ ] Add explicit legacy conversion with hash/version/provenance validation.
-- [ ] Verify tiny-model numerical tests and applicable existing CPU tests; commit.
+- [x] Write tests for native discovery, runtime dispatch, multimodal outputs, capacity errors and reload without full model weights.
+- [x] Observe failures, then integrate through RBLNModel hooks and preserve inspected input order.
+- [x] Add explicit legacy conversion with hash/version/provenance validation.
+- [x] Verify tiny-model numerical tests and applicable existing CPU tests; commit.
 
 ### Task 3: uv recipe, physical validation and profiling
 
@@ -54,7 +54,7 @@
 
 **Interfaces:** Consumes native public API from Task 2; produces reproducible prepare/encode/E2E benchmark and optional host trace.
 
-- [ ] Provide isolated uv setup and text/image/audio/mixed example.
-- [ ] Convert existing CA25 selector bundle and run actual native API inference, official-reference numerical checks and save/reload.
-- [ ] Run warmed timing separately from trace capture; record versions, inputs and measurement boundaries.
-- [ ] Review final diff, run relevant tests and Ruff, commit and push the feature branch.
+- [x] Provide isolated uv setup and text/image/audio/mixed example.
+- [x] Convert existing CA25 selector bundle and run actual native API inference, official-reference numerical checks and save/reload.
+- [x] Run warmed timing separately from trace capture; record versions, inputs and measurement boundaries.
+- [x] Review final diff, run relevant tests and Ruff, commit and push the feature branch.

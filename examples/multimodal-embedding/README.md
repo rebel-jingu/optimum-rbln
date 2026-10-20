@@ -135,3 +135,59 @@ These tests skip under upstream's default Transformers 5.15.1 environment.
 With the model-specific 5.20.1 stack, upstream's Qwen2.5-VL CPU test currently
 fails collection because `Qwen2_5_VisionRotaryEmbedding` was removed upstream;
 that unrelated adapter is not changed by this migration.
+
+## Verified on CA25, 2026-10-20
+
+The measured implementation is commit `92aa1c96cd0083718092c9fde026ff859cb8ad2c`.
+The model-specific environment uses PyTorch 2.14.1+cpu, Transformers 5.20.1,
+rebel-compiler 0.11.0.post1, BF16 weights, and four logical CA25 NPUs.
+
+- **99 new CPU tests pass**, plus 35 existing compatible CPU tests (134 total).
+  Ruff passes. The Qwen2.5-VL collection incompatibility described above is
+  excluded from this count, rather than reported as a passing full suite.
+- **22 full-weight native checks pass** on the imported bundle: text, images,
+  audio, mixed/multiple media, modified speech, dimensions and capacity errors.
+  All 18 prepared-input hashes match the previous selector-bundle validation;
+  minimum final cosine against the official reference is **0.9988199262**.
+- **Fresh native compilation succeeds** for `text_128`, `vision_630` and
+  `audio_64` with the selector layout and four devices. Its separate eight
+  checks pass, including all four modality combinations; minimum numerical
+  cosine is **0.9998226806**. This is a small compile smoke bundle, not a claim
+  that all default buckets were freshly recompiled in this run.
+- All 12 imported binaries retain their original hashes. Actual binary target
+  and device counts were inspected for the imported and fresh graphs.
+- Compiled reload retains 134,217,728 token-embedding parameters on CPU,
+  versus the reference model's 744,371,488 total parameters. It constructs no
+  encoder layers; the CPU test makes full HF constructors/loaders fail during
+  compiled reload to verify this boundary.
+
+Four public requests, three warmups and 100 uninstrumented samples each, with
+Torch and SDK both at four CPU threads:
+
+| Request | CPU prepare median (ms) | Native forward median (ms) | E2E median (ms) |
+| --- | ---: | ---: | ---: |
+| Text | 0.157 | 2.750 | 2.907 |
+| Photo | 7.045 | 12.451 | 19.495 |
+| Speech | 4.486 | 16.888 | 21.379 |
+| Text + photo + speech | 8.083 | 26.900 | 34.980 |
+
+The medians are computed independently and need not add exactly. These are new
+native-adapter measurements; older standalone/H200/CR13 results retain their
+original attribution. The benchmark stores its Git commit and package versions.
+This migration does not establish a new CR13 measurement: the CR13 SSH master
+connection expired, so that target's fork-based physical revalidation remains
+outstanding.
+
+The additional host trace contains four requests and a `host.validate` span
+for each; the official Perfetto processor parsed all 40 slices successfully.
+Grid validation uses integer coordinate counts rather than sorting
+2D rows; an isolated 400-sample CPU check measured 0.195 ms for the previous
+unique-row check and 0.00875 ms for the count check. The final separate trace
+observed 0.420 ms of validation for photo and 0.553 ms for mixed input. Trace
+durations are diagnostic and are excluded from latency samples.
+
+The generated files live under `.cache/native-benchmark-final/` and
+`.cache/native-validation-bincount.json` on the validation checkout. They are
+not included in Git. All work processes exited and devices 0–3 were checked
+at zero allocated bytes and zero utilization afterward. `model.close()` closes
+CPU preprocessing workers; native runtimes follow the model object's lifetime.

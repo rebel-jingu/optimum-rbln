@@ -1,6 +1,9 @@
 
 # Optimum RBLN
 
+This fork adds experimental **EmbeddingGemma 2 text, image and audio embeddings**.
+See the [native adapter, isolated uv setup and profiling example](examples/multimodal-embedding/README.md).
+
 <div align="center">
 
 <picture>
