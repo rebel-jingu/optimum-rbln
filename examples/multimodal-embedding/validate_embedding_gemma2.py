@@ -71,6 +71,7 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--baseline-validation", type=Path)
     parser.add_argument("--devices", nargs="+", type=int, default=[0])
+    parser.add_argument("--cases", nargs="+", help="Optional subset for a deliberately small compiled bucket set")
     args = parser.parse_args()
     if args.output.exists():
         raise ValueError("Use a new validation output path")
@@ -103,6 +104,10 @@ def main():
         two_audio={"audio": [wave, wave]},
         mixed_media_only={"images": [image], "audio": [wave]},
     )
+    if args.cases:
+        if set(args.cases) - requests.keys():
+            parser.error("Unknown validation case name")
+        requests = {name: requests[name] for name in args.cases}
     results = []
     try:
         for name, request in requests.items():

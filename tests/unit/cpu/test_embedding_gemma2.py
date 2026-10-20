@@ -490,6 +490,16 @@ def test_compile_preflights_every_mapped_device_group(tiny_model, monkeypatch, i
         assert all(c.input_info == [("x", [1], "float32")] for c in cfg.compile_cfgs)
 
 
+def test_native_host_validation_has_its_own_trace_span(tiny_model):
+    from optimum.rbln.transformers.models.embedding_gemma2.embedding_gemma2_profiling import TraceSession
+
+    model, _ = make_native_model(tiny_model)
+    with TraceSession() as session:
+        model(input_ids=torch.tensor([[2, 3]]))
+    names = {event["name"] for event in session.events}
+    assert {"host.validate", "host.text_inputs", "text.npu"} <= names
+
+
 def test_static_l2_normalization_matches_reference_at_small_norms():
     from optimum.rbln.transformers.models.embedding_gemma2.embedding_gemma2_architecture import static_normalize
 

@@ -327,10 +327,11 @@ class RBLNEmbeddingGemma2Model(RBLNModel):
         ):
             if value is not None:
                 inputs[name] = value
-        self._validate_inputs(inputs)
-        inputs["attention_mask"] = inputs["attention_mask"].to(torch.int64)
-        if "input_features_mask" in inputs:
-            inputs["input_features_mask"] = inputs["input_features_mask"].bool()
+        with trace_span("host.validate"):
+            self._validate_inputs(inputs)
+            inputs["attention_mask"] = inputs["attention_mask"].to(torch.int64)
+            if "input_features_mask" in inputs:
+                inputs["input_features_mask"] = inputs["input_features_mask"].bool()
         if self.engine is None:
             raise RuntimeError("Load with rbln_create_runtimes=True to execute the NPU model")
         embeddings = torch.from_numpy(self.engine.encode_inputs(inputs, dimensions)).unsqueeze(0)
