@@ -15,8 +15,11 @@ Add RBLNEmbeddingGemma2Model and RBLNEmbeddingGemma2ModelConfig, exported throug
 the existing lazy import system and discoverable through RBLNAutoModel. Use
 from_pretrained(export=True), from_model, save_pretrained, and compiled
 from_pretrained through the ordinary RBLNModel lifecycle. forward accepts the
-official processor tensors and returns normalized embeddings in the official
-EmbeddingGemma2 output type. Batch size remains one; supported dimensions are
+official processor tensors and returns RBLNEmbeddingGemma2Output.embeddings,
+a CPU float32 tensor of shape [1, dimensions]. return_dict=False returns the
+single-element tuple (embeddings,). Normalize after dimension truncation. This
+is an embedding-only API, not HF per-token output compatibility. Batch size
+remains one; supported dimensions are
 768, 512, 256, and 128. Explicitly reject unsupported options and capacity
 overflow before any device execution.
 
@@ -38,8 +41,15 @@ must survive a save/reload cycle.
 Provide an explicit conversion entry point for existing verified standalone
 bundles. Validate their file hashes and signatures; copy the unchanged binaries
 into the native naming/configuration layout, preserving original provenance.
+Conversion accepts the pinned source model once to extract host state.
+Compiled reload constructs neither the full HF model nor a checkpoint loader.
 Conversion is not recompilation, and historical numerical/performance results
 must not be relabeled as new optimum-rbln measurements.
+
+Validate paired image/audio tensors, shapes and binary masks before any runtime
+call. Default a missing text attention mask to all-valid. Reject non-prefix
+audio validity masks, videos, custom positions/embeddings, hidden-state and
+attention output requests, and unknown processor keys explicitly.
 
 ## Numerical and performance requirements
 
